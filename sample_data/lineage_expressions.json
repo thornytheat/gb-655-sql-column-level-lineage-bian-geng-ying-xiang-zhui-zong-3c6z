@@ -1,0 +1,11 @@
+{
+  "registered_at": "2026-09-02T03:00:00Z",
+  "changed": ["o.order_amt"],
+  "expressions": [
+    {"target": "dm.gross", "expression": "o.order_amt + o.tax_amt"},
+    {"target": "dm.gross", "expression": "p.pay_amt + p.channel_fee"},
+    {"target": "dm.net", "expression": "dm.gross - o.discount_amt"},
+    {"target": "rpt.daily", "expression": "dm.net"},
+    {"target": "rpt.channel", "expression": "p.channel + p.pay_amt"}
+  ]
+}

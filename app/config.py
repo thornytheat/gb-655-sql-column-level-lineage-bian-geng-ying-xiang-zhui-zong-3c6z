@@ -34,6 +34,7 @@ DEFAULT_NEW = "schema_v2026_09.sql"
 BASE_OLD = "schema_v2026_03.sql"
 DEFAULT_REFS = "refs_downstream.json"
 EXTRA_METADATA = "metadata_extra.json"
+LINEAGE_SAMPLE = "lineage_expressions.json"
 
 ALLOWED_SUFFIX = {".sql", ".json"}
 SAMPLE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")

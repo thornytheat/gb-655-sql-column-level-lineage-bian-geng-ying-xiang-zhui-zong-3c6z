@@ -56,7 +56,44 @@ CREATE TABLE IF NOT EXISTS kv (
     k TEXT PRIMARY KEY,
     v TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS lineage_parses (
+    scope          TEXT PRIMARY KEY,
+    expr_count     INTEGER NOT NULL,
+    edge_count     INTEGER NOT NULL,
+    conflict_count INTEGER NOT NULL,
+    created_at     TEXT NOT NULL,
+    payload_json   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rulings (
+    scope              TEXT NOT NULL,
+    target             TEXT NOT NULL,
+    chosen_line        INTEGER NOT NULL,
+    chosen_sources     TEXT NOT NULL,
+    reason             TEXT NOT NULL,
+    revision           INTEGER NOT NULL,
+    active             INTEGER NOT NULL,
+    published_revision INTEGER NOT NULL,
+    decided_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    PRIMARY KEY (scope, target)
+);
+CREATE TABLE IF NOT EXISTS ruling_events (
+    event_id    TEXT PRIMARY KEY,
+    scope       TEXT NOT NULL,
+    target      TEXT NOT NULL,
+    revision    INTEGER NOT NULL,
+    phase       TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    detail_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lineage_views (
+    scope        TEXT PRIMARY KEY,
+    view_seq     INTEGER NOT NULL,
+    published_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_quarantine_schema ON quarantine(schema_id);
+CREATE INDEX IF NOT EXISTS idx_ruling_events_scope ON ruling_events(scope);
 """
 
 
@@ -83,7 +120,8 @@ def reset() -> None:
     """测试与重建用：清空全部业务表。"""
     with _LOCK, _connect() as conn:
         conn.executescript(SCHEMA)
-        for table in ("snapshots", "runs", "quarantine", "kv"):
+        for table in ("snapshots", "runs", "quarantine", "kv",
+                      "lineage_parses", "rulings", "ruling_events", "lineage_views"):
             conn.execute(f"DELETE FROM {table}")
 
 
@@ -272,3 +310,213 @@ def get_kv(key: str, default=None):
     with _LOCK, _connect() as conn:
         row = conn.execute("SELECT v FROM kv WHERE k=?", (key,)).fetchone()
     return _loads(row["v"]) if row else default
+
+
+# ---------- 列级血缘解析批次 ----------
+
+def save_lineage_parse(parse: dict) -> None:
+    """登记解析批次；同批（同 scope）重解析不改写，裁定与首次解析记录都保留。"""
+    with _LOCK, _connect() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO lineage_parses
+                   (scope, expr_count, edge_count, conflict_count, created_at, payload_json)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                parse["scope"], int(parse["expr_count"]), int(parse["edge_count"]),
+                int(parse["conflict_count"]), parse["created_at"], _dumps(parse),
+            ),
+        )
+
+
+def load_lineage_parse(scope: str) -> dict | None:
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM lineage_parses WHERE scope=?", (scope,)
+        ).fetchone()
+    return _loads(row["payload_json"]) if row else None
+
+
+# ---------- 目标列裁定 ----------
+
+def _ruling_of(row: sqlite3.Row) -> dict:
+    return {
+        "scope": row["scope"],
+        "target": row["target"],
+        "chosen_line": int(row["chosen_line"]),
+        "chosen_sources": _loads(row["chosen_sources"]) or [],
+        "reason": row["reason"],
+        "revision": int(row["revision"]),
+        "active": bool(row["active"]),
+        "published_revision": int(row["published_revision"]),
+        "decided_at": row["decided_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def load_ruling(scope: str, target: str) -> dict | None:
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM rulings WHERE scope=? AND target=?", (scope, target)
+        ).fetchone()
+    return _ruling_of(row) if row else None
+
+
+def list_rulings(scope: str) -> list[dict]:
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM rulings WHERE scope=? ORDER BY target", (scope,)
+        ).fetchall()
+    return [_ruling_of(row) for row in rows]
+
+
+def pending_rulings(scope: str) -> list[dict]:
+    """决定已落库但尚未发布的裁定：发布中断后的续跑对象。"""
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM rulings WHERE scope=? AND published_revision < revision ORDER BY target",
+            (scope,),
+        ).fetchall()
+    return [_ruling_of(row) for row in rows]
+
+
+def _insert_event(conn: sqlite3.Connection, event: dict) -> bool:
+    """事件按内容定主键，重试命中同一主键直接忽略，不重复登记。"""
+    cursor = conn.execute(
+        """INSERT OR IGNORE INTO ruling_events
+               (event_id, scope, target, revision, phase, created_at, detail_json)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            event["event_id"], event["scope"], event["target"], int(event["revision"]),
+            event["phase"], event["created_at"], _dumps(event.get("detail") or {}),
+        ),
+    )
+    return cursor.rowcount > 0
+
+
+def ruling_decide(ruling: dict, event: dict, expected_revision: int) -> bool:
+    """裁定落库：expected_revision 是乐观锁，事件与决定同事务提交。
+
+    版本不匹配（并发下被抢先）返回 False，由调用方转成 409。
+    """
+    with _LOCK, _connect() as conn:
+        if expected_revision == 0:
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO rulings
+                       (scope, target, chosen_line, chosen_sources, reason, revision,
+                        active, published_revision, decided_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    ruling["scope"], ruling["target"], int(ruling["chosen_line"]),
+                    _dumps(ruling["chosen_sources"]), ruling["reason"], int(ruling["revision"]),
+                    int(bool(ruling["active"])), int(ruling["published_revision"]),
+                    ruling["decided_at"], ruling["updated_at"],
+                ),
+            )
+        else:
+            cursor = conn.execute(
+                """UPDATE rulings SET chosen_line=?, chosen_sources=?, reason=?, revision=?,
+                       active=1, decided_at=?, updated_at=?
+                   WHERE scope=? AND target=? AND revision=?""",
+                (
+                    int(ruling["chosen_line"]), _dumps(ruling["chosen_sources"]),
+                    ruling["reason"], int(ruling["revision"]),
+                    ruling["decided_at"], ruling["updated_at"],
+                    ruling["scope"], ruling["target"], int(expected_revision),
+                ),
+            )
+        if cursor.rowcount == 0:
+            return False
+        _insert_event(conn, event)
+        return True
+
+
+def ruling_revoke(scope: str, target: str, *, reason: str, revision: int,
+                  expected_revision: int, updated_at: str, event: dict) -> bool:
+    """撤销落库：只对生效中且修订号匹配的裁定生效，事件同事务登记。"""
+    with _LOCK, _connect() as conn:
+        cursor = conn.execute(
+            """UPDATE rulings SET active=0, reason=?, revision=?, updated_at=?
+               WHERE scope=? AND target=? AND revision=? AND active=1""",
+            (reason, int(revision), updated_at, scope, target, int(expected_revision)),
+        )
+        if cursor.rowcount == 0:
+            return False
+        _insert_event(conn, event)
+        return True
+
+
+def list_ruling_events(scope: str, limit: int = 50) -> list[dict]:
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            """SELECT event_id, scope, target, revision, phase, created_at, detail_json
+               FROM ruling_events WHERE scope=? ORDER BY rowid DESC LIMIT ?""",
+            (scope, int(limit)),
+        ).fetchall()
+    events = []
+    for row in rows:
+        detail = _loads(row["detail_json"]) or {}
+        events.append({
+            "event_id": row["event_id"],
+            "scope": row["scope"],
+            "target": row["target"],
+            "revision": int(row["revision"]),
+            "phase": row["phase"],
+            "created_at": row["created_at"],
+            "reason": detail.get("reason") or "",
+            "chosen_line": detail.get("chosen_line"),
+        })
+    return events
+
+
+def count_ruling_events(scope: str) -> int:
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM ruling_events WHERE scope=?", (scope,)
+        ).fetchone()
+    return int(row["n"])
+
+
+# ---------- 发布视图 ----------
+
+def load_lineage_view(scope: str) -> dict | None:
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM lineage_views WHERE scope=?", (scope,)
+        ).fetchone()
+    return _loads(row["payload_json"]) if row else None
+
+
+def apply_publication(scope: str, events: list[dict], rulings: list[dict],
+                      view_payload: dict) -> int:
+    """发布：登记事件、推进已发布修订号、切换视图，单事务提交。
+
+    任何一步失败都整体回滚，旧版视图原样保留；事件主键幂等，重试不重复登记。
+    """
+    with _LOCK, _connect() as conn:
+        for event in events:
+            _insert_event(conn, event)
+        for ruling in rulings:
+            conn.execute(
+                """UPDATE rulings SET published_revision=?
+                   WHERE scope=? AND target=? AND revision=? AND published_revision<?""",
+                (
+                    int(ruling["revision"]), scope, ruling["target"],
+                    int(ruling["revision"]), int(ruling["revision"]),
+                ),
+            )
+        row = conn.execute(
+            "SELECT view_seq FROM lineage_views WHERE scope=?", (scope,)
+        ).fetchone()
+        seq = int(row["view_seq"]) + 1 if row else 1
+        payload = dict(view_payload)
+        payload["view_seq"] = seq
+        conn.execute(
+            """INSERT INTO lineage_views (scope, view_seq, published_at, payload_json)
+               VALUES (?,?,?,?)
+               ON CONFLICT(scope) DO UPDATE SET
+                   view_seq=excluded.view_seq,
+                   published_at=excluded.published_at,
+                   payload_json=excluded.payload_json""",
+            (scope, seq, payload["published_at"], _dumps(payload)),
+        )
+        return seq

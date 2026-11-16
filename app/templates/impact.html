@@ -94,9 +94,110 @@
   </div>
 </section>
 
+<section class="doc-section">
+  <h2><span class="clause">4</span>目标列裁定</h2>
+  {% if lineage.scope %}
+  <p class="lede">解析批次 <span class="mono">{{ lineage.scope }}</span>　表达式 <span class="mono">{{ lineage.expr_count }}</span>　原解析边 <span class="mono">{{ lineage.edges|length }}</span>　有效边 <span class="mono">{{ lineage.effective_edges|length }}</span>　冲突 <span class="mono">{{ lineage.conflict_count }}</span>
+    {% if lineage.view %}　已发布视图 <span class="mono">v{{ lineage.view.view_seq }}</span>{% else %}　<span class="st st-warn">视图未发布</span>{% endif %}
+  </p>
+  {% if lineage.pending %}
+  <div class="actions">
+    <p class="lede"><span class="st st-warn">{{ lineage.pending|length }} 条裁定待发布：{{ lineage.pending|join('，') }}</span></p>
+    <button type="button" data-action="lineage-publish" data-scope="{{ lineage.scope }}">发布 / 续跑</button>
+  </div>
+  {% endif %}
+  {% if lineage_rows %}
+  <div class="wrap-scroll">
+    <table>
+      <caption>两套来源的目标列<sup class="fn">2</sup></caption>
+      <thead>
+        <tr><th>目标列</th><th>原解析来源</th><th>备选来源</th><th>当前有效</th><th>裁定理由</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {% for row in lineage_rows %}
+        <tr>
+          <td class="name">{{ row.target }}</td>
+          <td class="name"><span class="from">L{{ row.original.line }}</span>　{{ row.original.sources|join('，') }}</td>
+          <td class="name">
+            {% for alt in row.alternatives %}
+            <span class="from">L{{ alt.line }}</span>　{{ alt.sources|join('，') }}<br>
+            {% endfor %}
+          </td>
+          <td class="name">
+            {% if row.corrected %}<span class="st st-warn">已纠正</span>{% else %}<span class="st st-ok">原解析</span>{% endif %}
+            <span class="from">L{{ row.effective.line }}</span>　{{ row.effective.sources|join('，') }}
+          </td>
+          <td class="reason">
+            {% if row.ruling %}
+            {{ row.ruling.reason }}<br>
+            <span class="code">修订 {{ row.ruling.revision }}{% if not row.ruling.active %} · 已撤销{% endif %}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            <div class="actions">
+              <input type="text" data-reason-for="{{ row.target }}" placeholder="理由（必填）" maxlength="200" aria-label="裁定理由 {{ row.target }}">
+              {% for alt in row.alternatives %}
+              <button type="button" data-action="lineage-rule" data-scope="{{ lineage.scope }}" data-target="{{ row.target }}" data-line="{{ alt.line }}" data-base-revision="{{ (row.ruling.revision if row.ruling else 0) }}">采信 L{{ alt.line }}</button>
+              {% endfor %}
+              {% if row.ruling and row.ruling.active %}
+              <button type="button" class="ghost" data-action="lineage-revoke" data-scope="{{ lineage.scope }}" data-target="{{ row.target }}" data-base-revision="{{ row.ruling.revision }}">撤销</button>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">没有两套来源的目标列。</p>
+  {% endif %}
+  <div class="split">
+    <div>
+      <h3>沿有效边的影响</h3>
+      <table>
+        <thead><tr><th>变更列</th><th>影响节点（有效）</th><th>影响节点（原解析）</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="name">{{ lineage.changed|join('，') or '—' }}</td>
+            <td class="name">{{ lineage.affected|join('，') or '—' }}</td>
+            <td class="name">{{ lineage.affected_original|join('，') or '—' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h3>裁定记录</h3>
+      {% if lineage.events %}
+      <table>
+        <thead><tr><th>时间</th><th>目标列</th><th>阶段</th><th class="num">修订</th><th>理由</th></tr></thead>
+        <tbody>
+          {% for event in lineage.events %}
+          <tr>
+            <td class="name">{{ event.created_at|ts }}</td>
+            <td class="name">{{ event.target }}</td>
+            <td class="reason"><span class="code">{{ phase_codes.get(event.phase, event.phase)|reason }}</span></td>
+            <td class="num">{{ event.revision }}</td>
+            <td class="reason">{{ event.reason or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="empty">还没有裁定。</p>
+      {% endif %}
+    </div>
+  </div>
+  <span class="flash" data-flash></span>
+  {% else %}
+  <p class="empty">还没有解析批次，先提交一批表达式。</p>
+  {% endif %}
+</section>
+
 <aside class="notes">
   <ol class="footnotes">
     <li>深度按最短跳数算，同名节点只出现一次。<a class="back" href="#main">↩</a></li>
+    <li>裁定只改有效边，原解析边与冲突证据按当时结果保留；撤销即回到原解析。<a class="back" href="#main">↩</a></li>
     <li>断链节点按直接受影响计入。<a class="back" href="#main">↩</a></li>
   </ol>
 </aside>

@@ -21,7 +21,7 @@ docker compose exec -T app python -m pytest -q
 1. 打开 `http://localhost:18214/`，看规格单的字段清单与采信诊断。
 2. `/types` 比较两个类型写法，看读者 / 写者两向结论。
 3. `/mapping` 看旧名到新名、别名 SQL、冲突项。
-4. `/impact` 看受影响节点、环、断链、单边登记。
+4. `/impact` 看受影响节点、环、断链、单边登记；同一目标列两套来源时按目标列裁定或撤销，发布后影响面沿有效边纠正。
 5. `/batches` 点「跑一次」，再点「陈旧提交」验证 409。
 6. `/spec` 导出迁移单与三份账目 CSV。
 
@@ -47,6 +47,11 @@ docker compose up -d --build
 | POST | `/api/compat` | 一对版本的两向判定 |
 | GET | `/api/mapping` | 映射表、别名、冲突 |
 | GET | `/api/impact` | 影响面、环、断链 |
+| POST | `/api/lineage` | 解析一批表达式并登记批次，同批重解析不抹裁定 |
+| GET | `/api/lineage` | 当前批次的原解析、裁定、有效边与影响 |
+| POST | `/api/lineage/rulings` | 按目标列裁定采信一套来源，带修订号乐观锁 |
+| POST | `/api/lineage/rulings/revoke` | 撤销裁定，恢复原解析 |
+| POST | `/api/lineage/publish` | 发布未发布的裁定；中断后续跑，重试幂等 |
 | POST | `/api/runs` | 跑批次，可带基线版本号与生效区间 |
 | GET | `/api/batches` | 批次历史 |
 | GET | `/api/reconcile` | 四账对账 |

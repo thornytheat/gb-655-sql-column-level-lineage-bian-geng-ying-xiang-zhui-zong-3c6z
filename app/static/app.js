@@ -31,7 +31,38 @@ const ACTIONS = {
     }
     return `比较完成 ${result.change}`;
   },
+
+  async 'lineage-rule'(button) {
+    const result = await request('/api/lineage/rulings', {
+      scope: button.dataset.scope,
+      target: button.dataset.target,
+      chosen_line: Number(button.dataset.line),
+      base_revision: Number(button.dataset.baseRevision || 0),
+      reason: reasonOf(button.dataset.target),
+    });
+    return `已裁定 ${result.target} 采信第 ${result.chosen_line} 行，修订 ${result.revision}`;
+  },
+
+  async 'lineage-revoke'(button) {
+    const result = await request('/api/lineage/rulings/revoke', {
+      scope: button.dataset.scope,
+      target: button.dataset.target,
+      base_revision: Number(button.dataset.baseRevision || 0),
+      reason: reasonOf(button.dataset.target),
+    });
+    return `已撤销 ${result.target}，恢复原解析`;
+  },
+
+  async 'lineage-publish'(button) {
+    const result = await request('/api/lineage/publish', { scope: button.dataset.scope });
+    return result.skipped ? '没有待发布的裁定' : `已发布视图 v${result.view_seq}`;
+  },
 };
+
+function reasonOf(target) {
+  const input = document.querySelector(`[data-reason-for="${target}"]`);
+  return input ? input.value : '';
+}
 
 async function request(url, body) {
   const response = await fetch(url, {
@@ -72,7 +103,7 @@ document.addEventListener('click', async (event) => {
   try {
     const message = await handler(button);
     flash(target, message || '完成', false);
-    if (name === 'run') {
+    if (name === 'run' || name.startsWith('lineage-')) {
       setTimeout(() => window.location.reload(), 400);
     }
   } catch (error) {

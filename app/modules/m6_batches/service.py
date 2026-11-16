@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+import json
+
 from app import config, errors, manifest as manifest_mod, store
 from app.modules.m1_intake import service as intake
 from app.modules.m2_types import service as types
 from app.modules.m3_compat import service as compat
 from app.modules.m4_mapping import service as mapping
+from app.modules.m5_impact import rulings as lineage_rulings
 from app.modules.m5_impact import service as impact
 from app.modules.m6_batches import guard, history, window as window_mod
 from app.modules.m7_migration import service as migration
@@ -160,7 +163,19 @@ def ensure_seeded() -> dict | None:
         return store.latest_run()
     run = execute()
     store.set_kv("seeded", {"run_id": run["run_id"], "version_seq": run["version_seq"]})
+    seed_lineage()
     return run
+
+
+def seed_lineage() -> None:
+    """样例表达式解析一批并发布初始视图；样例缺失就跳过。"""
+    path = config.SAMPLE_DIR / config.LINEAGE_SAMPLE
+    if not path.is_file():
+        return
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    record = lineage_rulings.record_parse(payload.get("expressions") or [],
+                                          payload.get("changed") or [])
+    lineage_rulings.publish(record["scope"])
 
 
 def current_run() -> dict | None:

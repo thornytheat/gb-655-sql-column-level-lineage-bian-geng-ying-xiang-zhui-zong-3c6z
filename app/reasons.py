@@ -43,6 +43,13 @@ CODES: dict[str, tuple[str, str]] = {
     "REF_ONE_SIDED": ("上下游只登记了单向", "break"),
     "REF_CYCLE": ("下游依赖成环", "break"),
     "REF_SELF_LOOP": ("下游依赖指向自己", "warn"),
+    # 列级血缘与目标列裁定
+    "LINEAGE_EMPTY": ("表达式没有可抽取的来源列", "warn"),
+    "TARGET_CONFLICT": ("同一目标列出现两套来源", "warn"),
+    "RULING_DECIDED": ("裁定采信指定来源", "info"),
+    "RULING_REVOKED": ("撤销裁定恢复原解析", "info"),
+    "RULING_PUBLISHED": ("裁定已发布生效", "info"),
+    "RULING_STALE": ("裁定基于过期的修订号", "break"),
     # 版本与批次
     "VERSION_STALE": ("基于旧版本提交", "break"),
     "VERSION_OVERLAP": ("生效区间与已有版本重叠", "warn"),
